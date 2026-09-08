@@ -3,7 +3,6 @@ name = "spelling_checker"
 version = "0.1.0"
 edition = "2024"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 name = "spelling_checker"
 crate-type = ["cdylib"]
@@ -12,3 +11,4 @@ crate-type = ["cdylib"]
 pyo3 = "0.29.0"
 calamine = "0.32"
 serde_json = "1"
+ureq = "3"
