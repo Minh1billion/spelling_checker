@@ -32,7 +32,7 @@ pub fn tag(token: &str) -> Vec<(String, &'static str)> {
         return vec![(token.to_string(), "PUNCT")];
     }
 
-    if chars.iter().all(|c| c.is_ascii_digit() || matches!(c, ':' | '/' | '-' | '.' | ',' | '%')) {
+    if chars.iter().all(|c| c.is_ascii_digit() || matches!(c, ':' | '/' | '-' | '.' | ',' | '%' | '–' | '—' | '~')) {
         return vec![(token.to_string(), "NUMERIC")];
     }
 
@@ -44,6 +44,17 @@ pub fn tag(token: &str) -> Vec<(String, &'static str)> {
     if let Ok(number) = phonenumber::parse(Some(phonenumber::country::VN), token) {
         if number.is_valid() {
             return vec![(token.to_string(), "PHONE")];
+        }
+    }
+
+    let units = [
+        "kg", "g", "mg", "km", "m", "cm", "mm", "ml", "l", "h", "p", "s", "%", "đ", "vnd", "usd",
+    ];
+    let digit_end = chars.iter().take_while(|c| c.is_ascii_digit()).count();
+    if digit_end > 0 && digit_end < chars.len() {
+        let suffix: String = chars[digit_end..].iter().collect::<String>().to_lowercase();
+        if units.contains(&suffix.as_str()) {
+            return vec![(token.to_string(), "QUANTITY")];
         }
     }
 
@@ -61,7 +72,11 @@ pub fn tag(token: &str) -> Vec<(String, &'static str)> {
         result.push((chars[..start].iter().collect(), "PUNCT"));
     }
     if start < end {
-        result.push((chars[start..end].iter().collect(), "WORD"));
+        let core: String = chars[start..end].iter().collect();
+        let has_digit = core.chars().any(|c| c.is_ascii_digit());
+        let has_alpha = core.chars().any(|c| c.is_alphabetic());
+        let core_tag = if has_digit && has_alpha { "CODE" } else { "WORD" };
+        result.push((core, core_tag));
     }
     if end < chars.len() {
         result.push((chars[end..].iter().collect(), "PUNCT"));
