@@ -15,11 +15,14 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
+import zipfile
+import xml.etree.ElementTree as ET
+
 import spelling_checker as sc
 
 app = FastAPI(title="Vietnamese Spelling Checker")
 
-MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
 SPREADSHEET_EXTS = (".xlsx", ".xlsm")
 
@@ -27,15 +30,39 @@ JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
 
 
-def extract_units(path: str, ext: str, sheet_name: Optional[str]):
+def list_sheet_names(path: str):
+    with zipfile.ZipFile(path) as z:
+        with z.open("xl/workbook.xml") as f:
+            tree = ET.parse(f)
+    ns = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    return [el.get("name") for el in tree.getroot().findall(".//main:sheets/main:sheet", ns)]
+
+
+def resolve_sheet_names(path: str, sheet_names: Optional[str]):
+    all_names = list_sheet_names(path)
+    if not all_names:
+        raise ValueError("Không tìm thấy sheet nào trong file")
+    if not sheet_names:
+        return [all_names[0]]
+    requested = [s.strip() for s in sheet_names.split(",") if s.strip()]
+    resolved = [s for s in requested if s in all_names]
+    return resolved or [all_names[0]]
+
+
+def extract_units(path: str, ext: str, sheet_names: Optional[str]):
     units = []
     if ext in SPREADSHEET_EXTS:
-        raw = sc.read_sheet(path, sheet_name or "Sheet1")
-        for entry in json.loads(raw):
-            location = f"R{entry['row'] + 1}C{entry['col'] + 1}"
-            value = str(entry.get("value", ""))
-            if value.strip():
-                units.append((location, value))
+        selected_sheets = resolve_sheet_names(path, sheet_names)
+        multi = len(selected_sheets) > 1
+        for sheet in selected_sheets:
+            raw = sc.read_sheet(path, sheet)
+            for entry in json.loads(raw):
+                location = f"R{entry['row'] + 1}C{entry['col'] + 1}"
+                if multi:
+                    location = f"{sheet}!{location}"
+                value = str(entry.get("value", ""))
+                if value.strip():
+                    units.append((location, value))
     else:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             for i, line in enumerate(f):
@@ -81,6 +108,22 @@ def process_job(job_id: str, units: list, whitelist: list, lang: str):
         JOBS[job_id]["status"] = "done"
         JOBS[job_id]["errors"] = errors
         JOBS[job_id]["finished_at"] = time.time()
+
+
+def run_job_in_background(job_id: str, path: str, units: list, whitelist: list, lang: str):
+    try:
+        for _ in process_job(job_id, units, whitelist, lang):
+            pass
+    except Exception as e:
+        with JOBS_LOCK:
+            JOBS[job_id]["status"] = "error"
+            JOBS[job_id]["error"] = str(e)
+            JOBS[job_id]["finished_at"] = time.time()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 async def save_upload(upload: UploadFile):
@@ -134,18 +177,69 @@ def build_pdf(job: dict) -> io.BytesIO:
     return buffer
 
 
-@app.post("/check/stream")
-async def check_stream(
+@app.post("/check/sheets")
+async def check_sheets(file: UploadFile = File(...)):
+    path, ext = await save_upload(file)
+    try:
+        if ext not in SPREADSHEET_EXTS:
+            return JSONResponse({"sheets": []})
+        names = await asyncio.to_thread(list_sheet_names, path)
+        return JSONResponse({"sheets": names})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        os.remove(path)
+
+
+@app.post("/check/start")
+async def check_start(
     file: UploadFile = File(...),
     lang: str = Form("both"),
-    sheet_name: Optional[str] = Form(None),
+    sheet_names: Optional[str] = Form(None),
     whitelist: Optional[str] = Form(None),
 ):
     path, ext = await save_upload(file)
     wl = [w.strip() for w in whitelist.split(",")] if whitelist else []
 
     try:
-        units = await asyncio.to_thread(extract_units, path, ext, sheet_name)
+        units = await asyncio.to_thread(extract_units, path, ext, sheet_names)
+    except Exception as e:
+        os.remove(path)
+        raise HTTPException(status_code=400, detail=str(e))
+
+    job_id = uuid.uuid4().hex
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "status": "running",
+            "processed": 0,
+            "total": len(units),
+            "progress": 0.0,
+            "errors": [],
+            "created_at": time.time(),
+        }
+
+    thread = threading.Thread(
+        target=run_job_in_background,
+        args=(job_id, path, units, wl, lang),
+        daemon=True,
+    )
+    thread.start()
+
+    return JSONResponse({"job_id": job_id, "total": len(units)})
+
+
+@app.post("/check/stream")
+async def check_stream(
+    file: UploadFile = File(...),
+    lang: str = Form("both"),
+    sheet_names: Optional[str] = Form(None),
+    whitelist: Optional[str] = Form(None),
+):
+    path, ext = await save_upload(file)
+    wl = [w.strip() for w in whitelist.split(",")] if whitelist else []
+
+    try:
+        units = await asyncio.to_thread(extract_units, path, ext, sheet_names)
     except Exception as e:
         os.remove(path)
         raise HTTPException(status_code=400, detail=str(e))
@@ -214,6 +308,7 @@ async def get_job(job_id: str):
             "total": job["total"],
             "progress": job["progress"],
             "errors": job["errors"],
+            "error": job.get("error"),
         }
     )
 
