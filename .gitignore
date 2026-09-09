@@ -73,4 +73,5 @@ docs/_build/
 
 # Debug
 demo.py
+app.py
 *.json

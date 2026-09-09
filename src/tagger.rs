@@ -17,6 +17,18 @@ pub fn tag(token: &str) -> Vec<(String, &'static str)> {
         return vec![(token.to_string(), "URL")];
     }
 
+    let domain_part = token.split('/').next().unwrap_or(token);
+    let labels: Vec<&str> = domain_part.split('.').collect();
+    let is_domain = !domain_part.starts_with('.')
+        && !domain_part.ends_with('.')
+        && !domain_part.is_empty()
+        && labels.len() >= 2
+        && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        && labels.last().map_or(false, |tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()));
+    if is_domain {
+        return vec![(token.to_string(), "URL")];
+    }
+
     if !token.starts_with('@') && token.matches('@').count() == 1 {
         let parts: Vec<&str> = token.split('@').collect();
         if parts[1].contains('.') {
@@ -73,10 +85,38 @@ pub fn tag(token: &str) -> Vec<(String, &'static str)> {
     }
     if start < end {
         let core: String = chars[start..end].iter().collect();
-        let has_digit = core.chars().any(|c| c.is_ascii_digit());
-        let has_alpha = core.chars().any(|c| c.is_alphabetic());
-        let core_tag = if has_digit && has_alpha { "CODE" } else { "WORD" };
-        result.push((core, core_tag));
+        if core.contains('/') {
+            let parts: Vec<&str> = core.split('/').collect();
+            for (i, part) in parts.iter().enumerate() {
+                if i > 0 {
+                    result.push(("/".to_string(), "PUNCT"));
+                }
+                if part.is_empty() {
+                    continue;
+                }
+                let has_digit = part.chars().any(|c| c.is_ascii_digit());
+                let has_alpha = part.chars().any(|c| c.is_alphabetic());
+                let part_tag = if has_digit && has_alpha {
+                    "CODE"
+                } else if has_digit {
+                    "NUMERIC"
+                } else {
+                    "WORD"
+                };
+                result.push((part.to_string(), part_tag));
+            }
+        } else {
+            let has_digit = core.chars().any(|c| c.is_ascii_digit());
+            let has_alpha = core.chars().any(|c| c.is_alphabetic());
+            let core_tag = if has_digit && has_alpha {
+                "CODE"
+            } else if has_digit {
+                "NUMERIC"
+            } else {
+                "WORD"
+            };
+            result.push((core, core_tag));
+        }
     }
     if end < chars.len() {
         result.push((chars[end..].iter().collect(), "PUNCT"));

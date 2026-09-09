@@ -346,6 +346,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "hunspell"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92a1481919add41a5c256027b4dfb54566c6a93e398223ee069336c6cc34e0b1"
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -845,6 +851,7 @@ version = "0.1.0"
 dependencies = [
  "calamine",
  "chrono",
+ "hunspell",
  "phonenumber",
  "pyo3",
  "serde_json",

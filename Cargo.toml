@@ -8,9 +8,10 @@ name = "spelling_checker"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = "0.29.0"
+pyo3 = { version = "0.29.0", features = ["abi3-py38"] }
 calamine = "0.32"
 serde_json = "1"
 ureq = "3"
 chrono = "0.4"
 phonenumber = "0.3"
+hunspell = "0.1.2"
