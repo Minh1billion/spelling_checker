@@ -12,8 +12,11 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 import zipfile
 import xml.etree.ElementTree as ET
@@ -28,6 +31,12 @@ SPREADSHEET_EXTS = (".xlsx", ".xlsm")
 
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
+
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+VN_FONT = "DejaVuSans"
+VN_FONT_BOLD = "DejaVuSans-Bold"
+pdfmetrics.registerFont(TTFont(VN_FONT, os.path.join(FONT_DIR, "DejaVuSans.ttf")))
+pdfmetrics.registerFont(TTFont(VN_FONT_BOLD, os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf")))
 
 
 def list_sheet_names(path: str):
@@ -149,25 +158,84 @@ async def save_upload(upload: UploadFile):
     return path, suffix
 
 
+def group_errors(errors: list):
+    grouped = {}
+    order = []
+    for err in errors:
+        token = err["token"]
+        if token not in grouped:
+            grouped[token] = []
+            order.append(token)
+        grouped[token].append(err["location"])
+
+    groups = [(token, grouped[token]) for token in order]
+    groups.sort(key=lambda item: len(item[1]), reverse=True)
+    return groups
+
+
 def build_pdf(job: dict) -> io.BytesIO:
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=36,
+        rightMargin=36,
+        topMargin=36,
+        bottomMargin=36,
+    )
     styles = getSampleStyleSheet()
-    elements = [Paragraph("Báo cáo lỗi chính tả", styles["Title"]), Spacer(1, 12)]
+    title_style = ParagraphStyle(
+        "VNTitle",
+        parent=styles["Title"],
+        fontName=VN_FONT_BOLD,
+    )
+    header_style = ParagraphStyle(
+        "VNHeader",
+        fontName=VN_FONT_BOLD,
+        fontSize=9,
+        textColor=colors.white,
+        alignment=TA_LEFT,
+    )
+    cell_style = ParagraphStyle(
+        "VNCell",
+        fontName=VN_FONT,
+        fontSize=9,
+        leading=12,
+        alignment=TA_LEFT,
+    )
 
-    data = [["Vị trí", "Từ"]]
-    for err in job["errors"]:
-        data.append([err["location"], err["token"]])
+    elements = [Paragraph("Báo cáo lỗi chính tả", title_style), Spacer(1, 12)]
 
-    table = Table(data, colWidths=[100, 380])
+    groups = group_errors(job["errors"])
+
+    data = [
+        [
+            Paragraph("Từ lỗi", header_style),
+            Paragraph("Tần suất", header_style),
+            Paragraph("Vị trí", header_style),
+        ]
+    ]
+    for token, locations in groups:
+        data.append(
+            [
+                Paragraph(token, cell_style),
+                Paragraph(str(len(locations)), cell_style),
+                Paragraph(", ".join(locations), cell_style),
+            ]
+        )
+
+    table = Table(data, colWidths=[110, 60, 330], repeatRows=1)
     table.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2d3748")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
             ]
         )
     )

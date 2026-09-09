@@ -29,6 +29,7 @@ COPY requirements.txt .
 RUN pip install --break-system-packages --no-cache-dir /tmp/*.whl -r requirements.txt
 
 COPY dictionaries ./dictionaries
+COPY fonts ./fonts
 COPY app.py .
 
 EXPOSE 8000
