@@ -48,7 +48,7 @@ pub fn tag(token: &str) -> Vec<(String, &'static str)> {
     }
 
     let units = [
-        "kg", "g", "mg", "km", "m", "cm", "mm", "ml", "l", "h", "p", "s", "%", "đ", "vnd", "usd",
+        "kg", "g", "mg", "km", "m", "cm", "mm", "ml", "l", "h", "p", "s", "%", "đ", "vnd", "usd", "s", "h", "min",
     ];
     let digit_end = chars.iter().take_while(|c| c.is_ascii_digit()).count();
     if digit_end > 0 && digit_end < chars.len() {
