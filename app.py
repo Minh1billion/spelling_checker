@@ -137,7 +137,7 @@ def build_pdf(job: dict) -> io.BytesIO:
 @app.post("/check/stream")
 async def check_stream(
     file: UploadFile = File(...),
-    lang: str = Form("vi"),
+    lang: str = Form("both"),
     sheet_name: Optional[str] = Form(None),
     whitelist: Optional[str] = Form(None),
 ):
@@ -164,11 +164,19 @@ async def check_stream(
     async def event_source():
         try:
             gen = process_job(job_id, units, wl, lang)
-            while True:
+
+            def next_item():
                 try:
-                    processed, total = await asyncio.to_thread(next, gen)
+                    return next(gen)
                 except StopIteration:
+                    return None
+
+            while True:
+                result = await asyncio.to_thread(next_item)
+
+                if result is None:
                     break
+                processed, total = result
                 payload = {
                     "job_id": job_id,
                     "processed": processed,
@@ -176,15 +184,6 @@ async def check_stream(
                     "progress": (processed / total) if total else 1.0,
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
-            with JOBS_LOCK:
-                final = JOBS[job_id]
-            done_payload = {
-                "job_id": job_id,
-                "status": "done",
-                "total": final["total"],
-                "errors_found": len(final["errors"]),
-            }
-            yield f"data: {json.dumps(done_payload)}\n\n"
         finally:
             os.remove(path)
 
