@@ -27,7 +27,7 @@ mod spelling_checker {
 
     #[pyfunction]
     #[pyo3(signature = (token, whitelist, lang="both"))]
-    fn check(token: &str, whitelist: Vec<String>, lang: &str) -> (bool, Vec<String>) {
+    fn check(token: &str, whitelist: Vec<String>, lang: &str) -> bool {
         let whitelist: HashSet<String> = whitelist.into_iter().collect();
         spellcheck::spellcheck(token, &whitelist, lang)
     }

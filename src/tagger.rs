@@ -23,7 +23,7 @@ pub fn tag(token: &str) -> Vec<(String, &'static str)> {
         && !domain_part.ends_with('.')
         && !domain_part.is_empty()
         && labels.len() >= 2
-        && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
         && labels.last().map_or(false, |tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()));
     if is_domain {
         return vec![(token.to_string(), "URL")];

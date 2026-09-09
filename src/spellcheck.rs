@@ -1,25 +1,28 @@
-use hunspell::Hunspell;
 use std::collections::HashSet;
+use std::fs;
 use std::sync::OnceLock;
 
-struct HunspellHandle(Hunspell);
-unsafe impl Sync for HunspellHandle {}
-unsafe impl Send for HunspellHandle {}
+static EN: OnceLock<HashSet<String>> = OnceLock::new();
+static VI: OnceLock<HashSet<String>> = OnceLock::new();
 
-static EN: OnceLock<HunspellHandle> = OnceLock::new();
-static VI: OnceLock<HunspellHandle> = OnceLock::new();
-
-fn en() -> &'static Hunspell {
-    &EN.get_or_init(|| HunspellHandle(Hunspell::new("dictionaries/en.aff", "dictionaries/en.dic")))
-        .0
+fn load(path: &str) -> HashSet<String> {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
 }
 
-fn vi() -> &'static Hunspell {
-    &VI.get_or_init(|| HunspellHandle(Hunspell::new("dictionaries/vi.aff", "dictionaries/vi.dic")))
-        .0
+fn en() -> &'static HashSet<String> {
+    EN.get_or_init(|| load("dictionaries/en_words.txt"))
 }
 
-fn checkers(lang: &str) -> Vec<&'static Hunspell> {
+fn vi() -> &'static HashSet<String> {
+    VI.get_or_init(|| load("dictionaries/vi_words.txt"))
+}
+
+fn checkers(lang: &str) -> Vec<&'static HashSet<String>> {
     match lang {
         "en" => vec![en()],
         "vi" => vec![vi()],
@@ -27,21 +30,11 @@ fn checkers(lang: &str) -> Vec<&'static Hunspell> {
     }
 }
 
-pub fn spellcheck(token: &str, whitelist: &HashSet<String>, lang: &str) -> (bool, Vec<String>) {
+pub fn spellcheck(token: &str, whitelist: &HashSet<String>, lang: &str) -> bool {
     if whitelist.contains(token) {
-        return (false, Vec::new());
+        return false;
     }
-    let hs = checkers(lang);
-    if hs.iter().any(|h| h.check(token)) {
-        return (false, Vec::new());
-    }
-    let mut suggestions = Vec::new();
-    for h in hs {
-        for s in h.suggest(token) {
-            if !suggestions.contains(&s) {
-                suggestions.push(s);
-            }
-        }
-    }
-    (true, suggestions)
+    let lower = token.to_lowercase();
+    let sets = checkers(lang);
+    !sets.iter().any(|s| s.contains(token) || s.contains(&lower))
 }
