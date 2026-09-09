@@ -17,4 +17,9 @@ mod spelling_checker {
     fn tokenize(text: &str) -> Vec<String> {
         tokenizer::tokenize(text)
     }
+
+    #[pyfunction]
+    fn tag(token: &str) -> Vec<(String, &'static str)> {
+        tagger::tag(token)
+    }
 }
