@@ -31,6 +31,7 @@ SPREADSHEET_EXTS = (".xlsx", ".xlsm")
 
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
+CANCEL_EVENTS: dict = {}
 
 FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 VN_FONT = "DejaVuSans"
@@ -53,9 +54,20 @@ def resolve_sheet_names(path: str, sheet_names: Optional[str]):
         raise ValueError("Không tìm thấy sheet nào trong file")
     if not sheet_names:
         return [all_names[0]]
+    normalized_all = {name.strip(): name for name in all_names}
     requested = [s.strip() for s in sheet_names.split(",") if s.strip()]
-    resolved = [s for s in requested if s in all_names]
-    return resolved or [all_names[0]]
+    resolved = []
+    unmatched = []
+    for name in requested:
+        if name in normalized_all:
+            resolved.append(normalized_all[name])
+        else:
+            unmatched.append(name)
+    if unmatched:
+        raise ValueError(f"Không tìm thấy sheet: {', '.join(unmatched)}")
+    if not resolved:
+        raise ValueError("Không có sheet hợp lệ nào được chọn")
+    return resolved
 
 
 def extract_units(path: str, ext: str, sheet_names: Optional[str]):
@@ -92,12 +104,13 @@ def check_unit(location: str, text: str, whitelist: list, lang: str):
     return errors
 
 
-def process_job(job_id: str, units: list, whitelist: list, lang: str):
+def process_job(job_id: str, units: list, whitelist: list, lang: str, cancel_event: threading.Event):
     total = len(units)
     if total == 0:
         with JOBS_LOCK:
-            JOBS[job_id]["status"] = "done"
-            JOBS[job_id]["finished_at"] = time.time()
+            if job_id in JOBS:
+                JOBS[job_id]["status"] = "done"
+                JOBS[job_id]["finished_at"] = time.time()
         yield 0, 0
         return
 
@@ -105,30 +118,38 @@ def process_job(job_id: str, units: list, whitelist: list, lang: str):
     processed = 0
     errors = []
     for location, text in units:
+        if cancel_event.is_set():
+            return
         errors.extend(check_unit(location, text, whitelist, lang))
         processed += 1
         if processed % step == 0 or processed == total:
             with JOBS_LOCK:
+                if job_id not in JOBS:
+                    return
                 JOBS[job_id]["processed"] = processed
                 JOBS[job_id]["progress"] = processed / total
             yield processed, total
 
     with JOBS_LOCK:
-        JOBS[job_id]["status"] = "done"
-        JOBS[job_id]["errors"] = errors
-        JOBS[job_id]["finished_at"] = time.time()
+        if job_id in JOBS:
+            JOBS[job_id]["status"] = "done"
+            JOBS[job_id]["errors"] = errors
+            JOBS[job_id]["finished_at"] = time.time()
 
 
-def run_job_in_background(job_id: str, path: str, units: list, whitelist: list, lang: str):
+def run_job_in_background(job_id: str, path: str, units: list, whitelist: list, lang: str, cancel_event: threading.Event):
     try:
-        for _ in process_job(job_id, units, whitelist, lang):
+        for _ in process_job(job_id, units, whitelist, lang, cancel_event):
             pass
     except Exception as e:
         with JOBS_LOCK:
-            JOBS[job_id]["status"] = "error"
-            JOBS[job_id]["error"] = str(e)
-            JOBS[job_id]["finished_at"] = time.time()
+            if job_id in JOBS:
+                JOBS[job_id]["status"] = "error"
+                JOBS[job_id]["error"] = str(e)
+                JOBS[job_id]["finished_at"] = time.time()
     finally:
+        with JOBS_LOCK:
+            CANCEL_EVENTS.pop(job_id, None)
         try:
             os.remove(path)
         except OSError:
@@ -276,6 +297,7 @@ async def check_start(
         raise HTTPException(status_code=400, detail=str(e))
 
     job_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
     with JOBS_LOCK:
         JOBS[job_id] = {
             "status": "running",
@@ -285,10 +307,11 @@ async def check_start(
             "errors": [],
             "created_at": time.time(),
         }
+        CANCEL_EVENTS[job_id] = cancel_event
 
     thread = threading.Thread(
         target=run_job_in_background,
-        args=(job_id, path, units, wl, lang),
+        args=(job_id, path, units, wl, lang, cancel_event),
         daemon=True,
     )
     thread.start()
@@ -313,6 +336,7 @@ async def check_stream(
         raise HTTPException(status_code=400, detail=str(e))
 
     job_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
     with JOBS_LOCK:
         JOBS[job_id] = {
             "status": "running",
@@ -322,10 +346,11 @@ async def check_stream(
             "errors": [],
             "created_at": time.time(),
         }
+        CANCEL_EVENTS[job_id] = cancel_event
 
     async def event_source():
         try:
-            gen = process_job(job_id, units, wl, lang)
+            gen = process_job(job_id, units, wl, lang, cancel_event)
 
             def next_item():
                 try:
@@ -334,7 +359,16 @@ async def check_stream(
                     return None
 
             while True:
-                result = await asyncio.to_thread(next_item)
+                try:
+                    result = await asyncio.to_thread(next_item)
+                except Exception as e:
+                    with JOBS_LOCK:
+                        if job_id in JOBS:
+                            JOBS[job_id]["status"] = "error"
+                            JOBS[job_id]["error"] = str(e)
+                            JOBS[job_id]["finished_at"] = time.time()
+                    yield f"data: {json.dumps({'job_id': job_id, 'error': str(e)})}\n\n"
+                    break
 
                 if result is None:
                     break
@@ -347,7 +381,12 @@ async def check_stream(
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
         finally:
-            os.remove(path)
+            with JOBS_LOCK:
+                CANCEL_EVENTS.pop(job_id, None)
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     return StreamingResponse(event_source(), media_type="text/event-stream")
 
@@ -398,6 +437,9 @@ async def get_job_pdf(job_id: str):
 @app.delete("/check/{job_id}")
 async def delete_job(job_id: str):
     with JOBS_LOCK:
+        cancel_event = CANCEL_EVENTS.pop(job_id, None)
+        if cancel_event is not None:
+            cancel_event.set()
         existed = JOBS.pop(job_id, None) is not None
     if not existed:
         raise HTTPException(status_code=404, detail="job not found")
